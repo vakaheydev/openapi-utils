@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from collections import deque
+from collections import defaultdict, deque
 from typing import Any, Iterable
 
 
@@ -15,6 +15,8 @@ HTTP_METHODS = {
     "patch",
     "trace",
 }
+
+ALL_METHODS = "all"
 
 
 def remove_openapi_operations(
@@ -51,6 +53,44 @@ def remove_openapi_operations(
     return document
 
 
+def keep_openapi_operations(
+    document: dict[str, Any],
+    operations_to_keep: Iterable[tuple[str, str]],
+    *,
+    inplace: bool = False,
+) -> dict[str, Any]:
+    """
+    Keep only selected OpenAPI operations and prune components that are no
+    longer reachable from the resulting document.
+
+    Use method ``"all"`` to keep every HTTP operation that exists for a path.
+
+    Examples:
+        [("/users", "GET"), ("/orders/{id}", "DELETE")]
+        [("/users", "all")]
+
+    Path-level metadata such as ``parameters``, ``summary``, ``description``,
+    ``servers`` and ``$ref`` is preserved for paths that remain.
+
+    Args:
+        document: OpenAPI document already loaded into a Python dict.
+        operations_to_keep: Iterable of (path, method) tuples. ``method`` may
+            be a normal HTTP method or ``"all"``.
+        inplace: Mutate the input document instead of deep-copying it.
+
+    Returns:
+        The filtered and pruned OpenAPI document.
+    """
+
+    if not inplace:
+        document = copy.deepcopy(document)
+
+    _keep_operations(document, operations_to_keep)
+    _remove_unused_components(document)
+
+    return document
+
+
 def _remove_operations(
     document: dict[str, Any],
     operations_to_remove: Iterable[tuple[str, str]],
@@ -63,13 +103,7 @@ def _remove_operations(
         return
 
     for path, method in operations_to_remove:
-        method = method.lower()
-
-        if method not in HTTP_METHODS:
-            raise ValueError(
-                f"Unsupported HTTP method: {method!r}. "
-                f"Expected one of: {sorted(HTTP_METHODS)}"
-            )
+        method = _normalize_http_method(method, allow_all=False)
 
         path_item = paths.get(path)
         if not isinstance(path_item, dict):
@@ -79,6 +113,59 @@ def _remove_operations(
 
         if remove_empty_paths and not path_item:
             paths.pop(path, None)
+
+
+def _keep_operations(
+    document: dict[str, Any],
+    operations_to_keep: Iterable[tuple[str, str]],
+) -> None:
+    paths = document.get("paths")
+
+    if not isinstance(paths, dict):
+        return
+
+    methods_by_path: dict[str, set[str]] = defaultdict(set)
+
+    for path, method in operations_to_keep:
+        normalized_method = _normalize_http_method(method, allow_all=True)
+        methods_by_path[path].add(normalized_method)
+
+    for path in list(paths):
+        path_item = paths[path]
+
+        if path not in methods_by_path:
+            del paths[path]
+            continue
+
+        if not isinstance(path_item, dict):
+            continue
+
+        methods_to_keep = methods_by_path[path]
+
+        if ALL_METHODS in methods_to_keep:
+            continue
+
+        for key in list(path_item):
+            normalized_key = key.lower() if isinstance(key, str) else key
+
+            if normalized_key in HTTP_METHODS and normalized_key not in methods_to_keep:
+                del path_item[key]
+
+
+def _normalize_http_method(method: str, *, allow_all: bool) -> str:
+    if not isinstance(method, str):
+        raise TypeError(f"HTTP method must be a string, got {type(method).__name__}")
+
+    normalized = method.lower()
+    allowed_methods = HTTP_METHODS | ({ALL_METHODS} if allow_all else set())
+
+    if normalized not in allowed_methods:
+        raise ValueError(
+            f"Unsupported HTTP method: {method!r}. "
+            f"Expected one of: {sorted(allowed_methods)}"
+        )
+
+    return normalized
 
 
 def _remove_unused_components(document: dict[str, Any]) -> None:
