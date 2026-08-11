@@ -1,6 +1,6 @@
 from pprint import pprint
 
-from openapi_utils import remove_openapi_operations
+from openapi_utils import keep_openapi_operations
 
 
 openapi = {
@@ -42,7 +42,23 @@ openapi = {
                     }
                 },
             },
-        }
+        },
+        "/health": {
+            "get": {
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            },
+            "head": {
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            },
+        },
     },
     "components": {
         "schemas": {
@@ -68,10 +84,11 @@ openapi = {
 }
 
 
-result = remove_openapi_operations(
+result = keep_openapi_operations(
     openapi,
     [
-        ("/users", "POST"),
+        ("/users", "GET"),
+        ("/health", "all"),
     ],
 )
 
