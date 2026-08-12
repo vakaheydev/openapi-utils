@@ -27,17 +27,8 @@ def remove_openapi_operations(
     inplace: bool = False,
 ) -> dict[str, Any]:
     """
-    Remove selected OpenAPI operations and then prune components that are no
-    longer reachable from the remaining document.
-
-    Args:
-        document: OpenAPI document already loaded into a Python dict.
-        operations_to_remove: Iterable of (path, method) tuples.
-        remove_empty_paths: Remove a path item if it becomes completely empty.
-        inplace: Mutate the input document instead of deep-copying it.
-
-    Returns:
-        The pruned OpenAPI document.
+    Remove selected OpenAPI operations and then prune unreachable root tags
+    and components from the remaining document.
     """
 
     if not inplace:
@@ -48,6 +39,7 @@ def remove_openapi_operations(
         operations_to_remove,
         remove_empty_paths=remove_empty_paths,
     )
+    _remove_unused_root_tags(document)
     _remove_unused_components(document)
 
     return document
@@ -60,32 +52,17 @@ def keep_openapi_operations(
     inplace: bool = False,
 ) -> dict[str, Any]:
     """
-    Keep only selected OpenAPI operations and prune components that are no
-    longer reachable from the resulting document.
+    Keep only selected OpenAPI operations and then prune unreachable root tags
+    and components from the resulting document.
 
     Use method ``"all"`` to keep every HTTP operation that exists for a path.
-
-    Examples:
-        [("/users", "GET"), ("/orders/{id}", "DELETE")]
-        [("/users", "all")]
-
-    Path-level metadata such as ``parameters``, ``summary``, ``description``,
-    ``servers`` and ``$ref`` is preserved for paths that remain.
-
-    Args:
-        document: OpenAPI document already loaded into a Python dict.
-        operations_to_keep: Iterable of (path, method) tuples. ``method`` may
-            be a normal HTTP method or ``"all"``.
-        inplace: Mutate the input document instead of deep-copying it.
-
-    Returns:
-        The filtered and pruned OpenAPI document.
     """
 
     if not inplace:
         document = copy.deepcopy(document)
 
     _keep_operations(document, operations_to_keep)
+    _remove_unused_root_tags(document)
     _remove_unused_components(document)
 
     return document
@@ -166,6 +143,67 @@ def _normalize_http_method(method: str, *, allow_all: bool) -> str:
         )
 
     return normalized
+
+
+def _remove_unused_root_tags(document: dict[str, Any]) -> None:
+    """
+    Remove root-level OpenAPI Tag Objects that are no longer referenced by any
+    remaining operation.
+
+    Operation tags are referenced by name, e.g.:
+
+        paths:
+          /users:
+            get:
+              tags: [Users]
+
+        tags:
+          - name: Users
+          - name: Admin
+
+    If only ``Users`` is still referenced, the root ``Admin`` Tag Object is
+    removed. Inline operation tag names are left untouched; this function only
+    prunes the optional root-level ``tags`` declarations.
+    """
+
+    root_tags = document.get("tags")
+    if not isinstance(root_tags, list):
+        return
+
+    used_tags: set[str] = set()
+    paths = document.get("paths")
+
+    if isinstance(paths, dict):
+        for path_item in paths.values():
+            if not isinstance(path_item, dict):
+                continue
+
+            for method, operation in path_item.items():
+                if not isinstance(method, str) or method.lower() not in HTTP_METHODS:
+                    continue
+                if not isinstance(operation, dict):
+                    continue
+
+                operation_tags = operation.get("tags")
+                if not isinstance(operation_tags, list):
+                    continue
+
+                for tag in operation_tags:
+                    if isinstance(tag, str):
+                        used_tags.add(tag)
+
+    filtered_tags = [
+        tag
+        for tag in root_tags
+        if isinstance(tag, dict)
+        and isinstance(tag.get("name"), str)
+        and tag["name"] in used_tags
+    ]
+
+    if filtered_tags:
+        document["tags"] = filtered_tags
+    else:
+        document.pop("tags", None)
 
 
 def _remove_unused_components(document: dict[str, Any]) -> None:
